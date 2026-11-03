@@ -1,4 +1,3 @@
-
 import csv
 import json
 import math
@@ -8,6 +7,23 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+# ============================================================
+# Seestar認証キーの最優先設定
+# ============================================================
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys._MEIPASS)
+else:
+    BASE_DIR = Path(__file__).resolve().parent
+
+PEM_PATH = BASE_DIR / "seestar.pem"
+
+try:
+    from seestarpy import auth
+    if PEM_PATH.exists():
+        auth.set_key_path(str(PEM_PATH))
+except Exception as e:
+    print(f"警告: 認証キー設定失敗: {e}")
 
 from PySide6.QtCore import Qt, QRect, QTime
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
@@ -41,6 +57,7 @@ MAX_PANELS = 400
 # ============================================================
 
 def get_stellarium_center():
+    """視線ベクトルの中心座標 (J2000 度) を取得"""
     url = STELLARIUM_URL + "/api/main/view?coord=j2000"
 
     with urlopen(url, timeout=5) as response:
@@ -59,6 +76,29 @@ def get_stellarium_center():
         math.atan2(z, math.hypot(x, y))
     )
     return ra, dec
+
+
+def get_stellarium_selected():
+    """
+    Stellariumで現在選択されている天体のJ2000座標 (度) と名前を取得。
+    天体が選択されていない場合は画面中心を取得。
+    """
+    url_info = STELLARIUM_URL + "/api/objects/info?format=json"
+
+    try:
+        with urlopen(url_info, timeout=5) as response:
+            data = json.load(response)
+    except Exception:
+        data = {}
+
+    if data and "raJ2000" in data and "decJ2000" in data:
+        ra = float(data["raJ2000"]) % 360.0
+        dec = float(data["decJ2000"])
+        name = data.get("name") or data.get("localized-name") or "選択天体"
+        return ra, dec, name
+
+    ra, dec = get_stellarium_center()
+    return ra, dec, "星図中心（未選択）"
 
 
 def send_stellarium_script(code):
@@ -125,49 +165,41 @@ def rotate_offset(x, y, angle):
 def calculate_mosaic(
     ra, dec, width, height, cols, rows, overlap
 ):
-    step_x = width * (1-overlap/100)
-    step_y = height * (1-overlap/100)
+    step_x = width * (1 - overlap / 100)
+    step_y = height * (1 - overlap / 100)
 
     panels = []
 
     for row in range(rows):
         for col in range(cols):
-            x = (col-(cols-1)/2)*step_x
-            y = ((rows-1)/2-row)*step_y
+            x = (col - (cols - 1) / 2.0) * step_x
+            y = ((rows - 1) / 2.0 - row) * step_y
 
-            dx, dy = rotate_offset(
-                x, y, PANEL_ROTATION
-            )
-            pra, pdec = offset_coordinate(
-                ra, dec, dx, dy
-            )
-            panels.append((row+1, col+1, pra, pdec))
+            dx, dy = rotate_offset(x, y, PANEL_ROTATION)
+            pra, pdec = offset_coordinate(ra, dec, dx, dy)
+            panels.append((row + 1, col + 1, pra, pdec))
 
     return panels
 
 
 def calculate_panel_corners(ra, dec, width, height):
     corners = [
-        ( width/2, -height/2),
-        (-width/2, -height/2),
-        (-width/2,  height/2),
-        ( width/2,  height/2)
+        ( width / 2.0, -height / 2.0),
+        (-width / 2.0, -height / 2.0),
+        (-width / 2.0,  height / 2.0),
+        ( width / 2.0,  height / 2.0)
     ]
 
     result = []
     for x, y in corners:
-        dx, dy = rotate_offset(
-            x, y, PANEL_ROTATION
-        )
-        result.append(
-            offset_coordinate(ra, dec, dx, dy)
-        )
+        dx, dy = rotate_offset(x, y, PANEL_ROTATION)
+        result.append(offset_coordinate(ra, dec, dx, dy))
     return result
 
 
 def create_frame_png(path, number, width, height):
     w = 800
-    h = max(100, round(w*height/width))
+    h = max(100, round(w * height / width))
 
     image = QImage(w, h, QImage.Format_ARGB32)
     image.fill(QColor(0, 0, 0, 0))
@@ -177,7 +209,7 @@ def create_frame_png(path, number, width, height):
 
     painter.setPen(QPen(QColor(255, 235, 30), 6))
     painter.setBrush(Qt.NoBrush)
-    painter.drawRect(5, 5, w-11, h-11)
+    painter.drawRect(5, 5, w - 11, h - 11)
 
     painter.setPen(QColor(255, 255, 80))
     font = QFont("Arial")
@@ -201,7 +233,7 @@ def create_frame_png(path, number, width, height):
 # ============================================================
 
 def normalize_model(model):
-    """検出された機種名を画角設定のキーへ変換。"""
+    """検出された機種名を画角設定のキーへ変換"""
     s = str(model).upper().replace(" ", "").replace("-", "")
 
     if "S30PRO" in s:
@@ -212,12 +244,18 @@ def normalize_model(model):
 
 
 def discover_seestars():
-    """
-    seestarpyによる検索。
-    戻り値: [(表示名, IP, 機種名), ...]
-    """
     from seestarpy import connection
+    import sys
+    from pathlib import Path
+    from seestarpy import auth
 
+    if getattr(sys, "frozen", False):
+        base_dir = Path(sys._MEIPASS)
+    else:
+        base_dir = Path(__file__).resolve().parent
+
+    auth.set_key_path(str(base_dir / "seestar.pem"))
+    print(base_dir / "seestar.pem")
     connection.discover()
     found = []
 
@@ -239,18 +277,8 @@ def discover_seestars():
 def create_seestar_plan(
     plan_name, panels, start_min, duration_min
 ):
-    """
-    Seestar撮影PLANのJSONデータを作成する。
-
-    RA: Stellariumの度単位 → Seestarの時単位
-    Dec: 度単位
-    start_min: 現地時刻の午前0時からの経過分
-    duration_min: 各パネルの撮影時間（分）
-    """
-
     targets = []
 
-    # 9桁のターゲットID
     base_id = (
         100000000
         + uuid.uuid4().int % 800000000
@@ -265,104 +293,55 @@ def create_seestar_plan(
         target = {
             "target_id": base_id + i,
             "target_name": f"SMP-P{i}",
-            "alias_name": (
-                f"{plan_name}-R{row}C{col}"
-            ),
+            "alias_name": f"{plan_name}-R{row}C{col}",
             "target_ra_dec": [
                 round((ra / 15.0) % 24.0, 9),
                 round(dec, 9)
             ],
-            "lp_filter": False,
+            #"lp_filter": False,
             "camera_mode": "tele",
             "skip": False,
-            "start_min": (
-
-                start_min
-                + (i - 1) * duration_min
-            ),
+            "start_min": start_min + (i - 1) * duration_min,
             "duration_min": duration_min
         }
-
         targets.append(target)
 
     return {
         "plan_name": plan_name,
-        "update_time_seestar": (
-            datetime.now().strftime("%Y.%m.%d")
-        ),
+        "update_time_seestar": datetime.now().strftime("%Y.%m.%d"),
         "list": targets
     }
 
 
 def transfer_plan(ip, data):
-    """
-    Seestarに撮影PLANを転送する。
-
-    ip: SeestarのIPアドレス
-    data: PLAN JSONの辞書
-    """
-    from seestarpy import raw
+    from seestarpy import raw, connection, plan
 
     print(f"接続先: {ip}")
 
-    # 1. 接続確認
     response = raw.test_connection(ips=ip)
-
-    if not isinstance(response, dict):
-        raise RuntimeError(
-            f"接続応答が不正です: {response}"
-        )
-
-    if response.get("code") != 0:
-        raise RuntimeError(
-            f"Seestar接続失敗: {response}"
-        )
+    if not isinstance(response, dict) or response.get("code") != 0:
+        raise RuntimeError(f"Seestar接続失敗: {response}")
 
     print("Seestar接続確認 OK")
 
-    # 2. PLANの基本検証
     if not data.get("list"):
         raise ValueError("PLANに撮影対象がありません")
 
     for target in data["list"]:
         ra, dec = target["target_ra_dec"]
-
         if not (0 <= ra < 24 and -90 <= dec <= 90):
-            raise ValueError(
-                f"座標が不正です: {target}"
-            )
+            raise ValueError(f"座標が不正です: {target}")
 
-    print(
-        f"PLAN: {data['plan_name']} "
-        f"({len(data['list'])}パネル)"
-    )
-
-    # Seestar本体の現在の露出設定を使用
-    # 撮影PLAN転送
-    from seestarpy import connection, plan
-
-    # 送信先を接続済みのSeestarに固定
     connection.DEFAULT_IP = ip
-
-    # 念のため送信先を確認
     target_ip = connection.current_ip()
-
     if target_ip != ip:
-        raise RuntimeError(
-            f"送信先IPが一致しません: {target_ip}"
-        )
+        raise RuntimeError(f"送信先IPが一致しません: {target_ip}")
 
-    print(f"PLAN転送先: {target_ip}")
-    print("PLAN転送中...")
-
+    print(f"PLAN転送中... ({len(data['list'])}パネル)")
     result = plan.set_view_plan(data)
-
     print("PLAN転送応答:", result)
 
-    if not isinstance(result, dict):
-        raise RuntimeError(f"不正な応答: {result}")
-
-    if result.get("code") != 0:
+    if not isinstance(result, dict) or result.get("code") != 0:
         raise RuntimeError(f"PLAN転送失敗: {result}")
 
     return result
@@ -377,8 +356,8 @@ class MosaicPlanner(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Seestar Mosaic Planner v0.4")
-        self.resize(980, 780)
+        self.setWindowTitle("Seestar Mosaic Planner v0.5")
+        self.resize(450, 400)
 
         self.center_ra = None
         self.center_dec = None
@@ -400,10 +379,8 @@ class MosaicPlanner(QMainWindow):
 
         self.telescope = QComboBox()
         self.telescope.addItems(TELESCOPES.keys())
-        self.telescope.setCurrentIndex(-1)  # 起動時は未選択。手動選択は従来どおり可能
-        self.telescope.currentTextChanged.connect(
-            self.update_fov
-        )
+        self.telescope.setCurrentIndex(-1)
+        self.telescope.currentTextChanged.connect(self.update_fov)
 
         self.connect_button = QPushButton("Seestar接続")
         self.connect_button.clicked.connect(self.connect_seestar)
@@ -411,18 +388,12 @@ class MosaicPlanner(QMainWindow):
         self.device_combo = QComboBox()
         self.device_combo.setMinimumWidth(180)
         self.device_combo.setPlaceholderText("未検出")
-        self.device_combo.currentIndexChanged.connect(
-            self.device_changed
-        )
+        self.device_combo.currentIndexChanged.connect(self.device_changed)
 
         self.connection_label = QLabel("未接続")
 
-        self.fov_width = self.double_spin(
-            0.01, 90, 4.60, 3
-        )
-        self.fov_height = self.double_spin(
-            0.01, 90, 2.59, 3
-        )
+        self.fov_width = self.double_spin(0.01, 90, 4.60, 3)
+        self.fov_height = self.double_spin(0.01, 90, 2.59, 3)
 
         g.addWidget(QLabel("機種"), 0, 0)
         g.addWidget(self.telescope, 0, 1)
@@ -437,16 +408,14 @@ class MosaicPlanner(QMainWindow):
 
         layout.addWidget(group)
 
-        # ===== 星図中心 =====
-        group = QGroupBox("Stellarium 星図中心")
+        # ===== 基準座標 =====
+        group = QGroupBox("基準座標（選択天体 / 星図中心）")
         h = QHBoxLayout(group)
 
         self.coord_label = QLabel("未取得")
-        self.coord_label.setTextInteractionFlags(
-            Qt.TextSelectableByMouse
-        )
+        self.coord_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        button = QPushButton("星図中心を取得")
+        button = QPushButton("選択天体/中心を取得")
         button.clicked.connect(self.get_center)
 
         h.addWidget(self.coord_label, 1)
@@ -459,22 +428,20 @@ class MosaicPlanner(QMainWindow):
 
         self.cols = QSpinBox()
         self.cols.setRange(1, 20)
-        self.cols.setValue(4)
+        self.cols.setValue(3)
 
         self.rows = QSpinBox()
         self.rows.setRange(1, 20)
-        self.rows.setValue(2)
+        self.rows.setValue(3)
 
-        self.overlap = self.double_spin(
-            0, 90, 20, 1
-        )
+        self.overlap = self.double_spin(0, 90, 20, 1)
 
-        g.addWidget(QLabel("列数"), 0, 0)
+        g.addWidget(QLabel("南北方向"), 0, 0)
         g.addWidget(self.cols, 0, 1)
-        g.addWidget(QLabel("行数"), 0, 2)
+        g.addWidget(QLabel("東西方向"), 0, 2)
         g.addWidget(self.rows, 0, 3)
-        g.addWidget(QLabel("重複率 (%)"), 1, 0)
-        g.addWidget(self.overlap, 1, 1)
+        g.addWidget(QLabel("重複率 (%)"), 0, 4)
+        g.addWidget(self.overlap, 0, 5)
 
         layout.addWidget(group)
 
@@ -489,9 +456,9 @@ class MosaicPlanner(QMainWindow):
         ]
 
         for title, callback in actions:
-            button = QPushButton(title)
-            button.clicked.connect(callback)
-            buttons.addWidget(button)
+            btn = QPushButton(title)
+            btn.clicked.connect(callback)
+            buttons.addWidget(btn)
 
         layout.addLayout(buttons)
 
@@ -516,9 +483,7 @@ class MosaicPlanner(QMainWindow):
         self.plan_button.clicked.connect(self.make_plan)
 
         self.transfer_button = QPushButton("Seestar転送")
-        self.transfer_button.clicked.connect(
-            self.send_plan_to_seestar
-        )
+        self.transfer_button.clicked.connect(self.send_plan_to_seestar)
 
         g.addWidget(QLabel("プラン名"), 0, 0)
         g.addWidget(self.plan_name, 0, 1)
@@ -532,22 +497,35 @@ class MosaicPlanner(QMainWindow):
 
         layout.addWidget(group)
 
-
         # ===== 一覧 =====
         self.table = QTableWidget()
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels([
-            "行", "列", "RA (J2000 °)", "Dec (J2000 °)"
+            "南北", "東西", "RA (J2000 °)", "Dec (J2000 °)"
         ])
 
         self.table.setColumnWidth(0, 70)
         self.table.setColumnWidth(1, 70)
-        self.table.setColumnWidth(2, 220)
-        self.table.setColumnWidth(3, 220)
+        self.table.setColumnWidth(2, 120)
+        self.table.setColumnWidth(3, 120)
 
         layout.addWidget(self.table, 1)
-
         self.statusBar().showMessage("準備完了")
+        self.cleanup_all_potential_frames()
+
+    def cleanup_all_potential_frames(self):
+        """前回のセッションで残った smp_1 〜 smp_400 をまとめて消去"""
+        try:
+            # 50枚ずつまとめて消去スクリプトを送信
+            for start in range(1, MAX_PANELS + 1, 50):
+                end = min(start + 50, MAX_PANELS + 1)
+                code = "\n".join(
+                    f'core.removeSkyImage("smp_{i}");'
+                    for i in range(start, end)
+                )
+                send_stellarium_script(code)
+        except Exception:
+            pass  # Stellarium が未起動の場合は無視
 
     @staticmethod
     def double_spin(low, high, value, decimals):
@@ -601,29 +579,19 @@ class MosaicPlanner(QMainWindow):
                     "ステーションモードとLAN接続を確認してください。"
                 )
 
-            # 検出機器をコンボボックスに登録
             self.device_combo.blockSignals(True)
-
             try:
                 for label, ip, model in devices:
-                    self.device_combo.addItem(
-                        label, (ip, model)
-                    )
-
-                # 最初の機器を自動選択
+                    self.device_combo.addItem(label, (ip, model))
                 self.device_combo.setCurrentIndex(0)
-
             finally:
                 self.device_combo.blockSignals(False)
 
-            # 選択した機器に自動接続
             self.device_changed()
 
         except Exception as e:
             self.connection_label.setText("未接続")
-            QMessageBox.warning(
-                self, "Seestar検索エラー", str(e)
-            )
+            QMessageBox.warning(self, "Seestar検索エラー", str(e))
         finally:
             self.connect_button.setEnabled(True)
 
@@ -642,46 +610,33 @@ class MosaicPlanner(QMainWindow):
 
             response = raw.test_connection(ips=ip)
 
-            if not isinstance(response, dict):
-                raise RuntimeError(
-                    f"接続応答を確認できません: {response}"
-                )
-
-            if response.get("code") != 0:
-                raise RuntimeError(
-                    f"接続失敗: {response}"
-                )
+            if not isinstance(response, dict) or response.get("code") != 0:
+                raise RuntimeError(f"接続失敗: {response}")
 
             self.connected_ip = ip
-            self.connection_label.setText(
-                f"接続済み: {ip}"
-            )
+            self.connection_label.setText(f"接続済み: {ip}")
 
             model_key = normalize_model(model)
             if model_key in TELESCOPES:
                 self.telescope.setCurrentText(model_key)
             else:
                 QMessageBox.information(
-                    self,
-                    "未登録機種",
-                    f"検出機種: {model}\n"
-                    "この機種の画角は未登録です。"
+                    self, "未登録機種",
+                    f"検出機種: {model}\nこの機種の画角は未登録です。"
                 )
 
         except Exception as e:
             self.connection_label.setText("未接続")
-            QMessageBox.warning(
-                self, "接続失敗", str(e)
-            )
+            QMessageBox.warning(self, "接続失敗", str(e))
 
-    # ===== 撮影枠削除 =====
+    # ===== 撮影枠消去 =====
 
     def remove_drawn_frames(self):
         if self.drawn_count == 0:
             return
 
-        for start in range(1, self.drawn_count+1, 8):
-            end = min(start+8, self.drawn_count+1)
+        for start in range(1, self.drawn_count + 1, 8):
+            end = min(start + 8, self.drawn_count + 1)
             code = "\n".join(
                 f'core.removeSkyImage("smp_{i}");'
                 for i in range(start, end)
@@ -690,36 +645,31 @@ class MosaicPlanner(QMainWindow):
 
         self.drawn_count = 0
 
-    # ===== 星図中心 =====
+    # ===== 基準座標取得 =====
 
     def get_center(self):
         try:
-            ra, dec = get_stellarium_center()
+            ra, dec, name = get_stellarium_selected()
             self.remove_drawn_frames()
 
             self.center_ra = ra
             self.center_dec = dec
             self.coord_label.setText(
-                f"RA: {ra:.8f}°  Dec: {dec:+.8f}°"
+                f"[{name}] RA: {ra:.6f}° ({ra/15.0:.4f}h)  Dec: {dec:+.6f}°"
             )
             self.reset_calculation()
 
             self.statusBar().showMessage(
-                "星図中心を取得・撮影枠を消去しました"
+                f"{name} の座標を取得・撮影枠を消去しました"
             )
         except Exception as e:
-            QMessageBox.warning(
-                self, "Stellariumエラー", str(e)
-            )
+            QMessageBox.warning(self, "Stellariumエラー", str(e))
 
     # ===== モザイク計算 =====
 
     def calculate(self):
         if self.center_ra is None:
-            QMessageBox.warning(
-                self, "確認",
-                "星図中心を取得してください"
-            )
+            QMessageBox.warning(self, "確認", "基準座標を取得してください")
             return
 
         self.reset_calculation()
@@ -737,16 +687,11 @@ class MosaicPlanner(QMainWindow):
         self.calculation_settings = self.get_settings()
         self.table.setRowCount(len(self.panels))
 
-        for i, (row, col, ra, dec) in enumerate(
-            self.panels
-        ):
+        for i, (row, col, ra, dec) in enumerate(self.panels):
             for j, value in enumerate([
-                str(row), str(col),
-                f"{ra:.8f}", f"{dec:+.8f}"
+                str(row), str(col), f"{ra:.8f}", f"{dec:+.8f}"
             ]):
-                self.table.setItem(
-                    i, j, QTableWidgetItem(value)
-                )
+                self.table.setItem(i, j, QTableWidgetItem(value))
 
         self.statusBar().showMessage(
             f"{len(self.panels)}パネルを計算しました"
@@ -754,17 +699,13 @@ class MosaicPlanner(QMainWindow):
 
     def valid_calculation(self):
         if not self.panels:
-            QMessageBox.warning(
-                self, "確認",
-                "先にモザイク計算してください"
-            )
+            QMessageBox.warning(self, "確認", "先にモザイク計算してください")
             return False
 
         if self.get_settings() != self.calculation_settings:
             QMessageBox.warning(
                 self, "確認",
-                "設定が変更されています。\n"
-                "再計算してください。"
+                "設定が変更されています。\n再計算してください。"
             )
             return False
 
@@ -777,9 +718,7 @@ class MosaicPlanner(QMainWindow):
             return
 
         try:
-            SCRIPTS_DIR.mkdir(
-                parents=True, exist_ok=True
-            )
+            SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
             width = self.fov_width.value()
             height = self.fov_height.value()
@@ -787,10 +726,8 @@ class MosaicPlanner(QMainWindow):
 
             filenames = []
 
-            for i in range(1, len(self.panels)+1):
-                filename = (
-                    f"smp_frame_{run_id}_{i:03d}.png"
-                )
+            for i in range(1, len(self.panels) + 1):
+                filename = f"smp_frame_{run_id}_{i:03d}.png"
                 create_frame_png(
                     SCRIPTS_DIR / filename,
                     i, width, height
@@ -801,11 +738,9 @@ class MosaicPlanner(QMainWindow):
 
             for start in range(0, len(self.panels), 8):
                 lines = []
-                batch = self.panels[start:start+8]
+                batch = self.panels[start:start + 8]
 
-                for j, panel in enumerate(
-                    batch, start=start+1
-                ):
+                for j, panel in enumerate(batch, start=start + 1):
                     _, _, ra, dec = panel
 
                     corners = calculate_panel_corners(
@@ -817,42 +752,32 @@ class MosaicPlanner(QMainWindow):
                         for corner in corners
                         for coordinate in corner
                     ]
-                    args = ", ".join(
-                        f"{v:.12f}" for v in values
-                    )
+                    args = ", ".join(f"{v:.12f}" for v in values)
 
+                    # Stellarium 26仕様: 相対ファイル名 + 正しい13引数
                     lines.append(
                         f'core.loadSkyImage('
                         f'"smp_{j}", '
                         f'"{filenames[j-1]}", '
-                        f'{args}, 2.5, 14, true, '
-                        f'"EqJ2000", false);'
+                        f'{args}, 0, 360, true);'
                     )
 
-                send_stellarium_script(
-                    "\n".join(lines)
-                )
-                self.drawn_count = start+len(batch)
+                send_stellarium_script("\n".join(lines))
+                self.drawn_count = start + len(batch)
 
             self.statusBar().showMessage(
                 f"{len(self.panels)}枚の撮影枠を送信しました"
             )
 
         except Exception as e:
-            QMessageBox.critical(
-                self, "描画エラー", str(e)
-            )
+            QMessageBox.critical(self, "描画エラー", str(e))
 
     def clear_stellarium(self):
         try:
             self.remove_drawn_frames()
-            self.statusBar().showMessage(
-                "撮影枠を消去しました"
-            )
+            self.statusBar().showMessage("撮影枠を消去しました")
         except Exception as e:
-            QMessageBox.warning(
-                self, "削除エラー", str(e)
-            )
+            QMessageBox.warning(self, "削除エラー", str(e))
 
     # ===== PLAN作成 =====
 
@@ -871,92 +796,63 @@ class MosaicPlanner(QMainWindow):
 
         name = self.plan_name.text().strip()
         if not name:
-            QMessageBox.warning(
-                self, "確認",
-                "プラン名を入力してください"
-            )
+            QMessageBox.warning(self, "確認", "プラン名を入力してください")
             return
 
         t = self.start_time.time()
-        start_min = t.hour()*60 + t.minute()
-
+        start_min = t.hour() * 60 + t.minute()
         if self.next_day.isChecked():
             start_min += 1440
 
         duration = self.duration.value()
 
-        if start_min + duration*len(self.panels) > 2880:
+        if start_min + duration * len(self.panels) > 2880:
             QMessageBox.warning(
                 self, "時刻エラー",
-                "プラン終了時刻が開始日の翌日24時を"
-                "超えています。\n"
+                "プラン終了時刻が開始日の翌日24時を超えています。\n"
                 "開始時刻か撮影時間を変更してください。"
             )
             return
 
         data = create_seestar_plan(
-            name,
-            self.panels,
-            start_min,
-            duration
+            name, self.panels, start_min, duration
         )
 
         path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Seestar PLAN JSON保存",
-            f"{name}.json",
-            "JSON Files (*.json)"
+            self, "Seestar PLAN JSON保存", f"{name}.json", "JSON Files (*.json)"
         )
         if not path:
             return
 
         try:
-            with open(
-                path, "w", encoding="utf-8"
-            ) as f:
-                json.dump(
-                    data, f,
-                    ensure_ascii=False,
-                    indent=2
-                )
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
 
             self.plan_data = data
             self.plan_settings = self.current_plan_settings()
-
-            self.statusBar().showMessage(
-                f"PLAN作成完了: {path}"
-            )
+            self.statusBar().showMessage(f"PLAN作成完了: {path}")
 
         except Exception as e:
-            QMessageBox.critical(
-                self, "PLAN保存失敗", str(e)
-            )
+            QMessageBox.critical(self, "PLAN保存失敗", str(e))
 
     # ===== Seestar転送 =====
 
     def send_plan_to_seestar(self):
         if not self.connected_ip:
-            QMessageBox.warning(
-                self, "確認",
-                "先にSeestarへ接続してください"
-            )
+            QMessageBox.warning(self, "確認", "先にSeestarへ接続してください")
             return
 
         if not self.valid_calculation():
             return
 
         if self.plan_data is None:
-            QMessageBox.warning(
-                self, "確認",
-                "先にPLAN作成を実行してください"
-            )
+            QMessageBox.warning(self, "確認", "先にPLAN作成を実行してください")
             return
 
         if self.current_plan_settings() != self.plan_settings:
             QMessageBox.warning(
                 self, "確認",
-                "PLAN作成後に設定が変更されています。\n"
-                "PLANを作り直してください。"
+                "PLAN作成後に設定が変更されています。\nPLANを作り直してください。"
             )
             return
 
@@ -971,10 +867,8 @@ class MosaicPlanner(QMainWindow):
             f"パネル数: {count}\n"
             f"1パネル: {self.duration.value()}分\n"
             "露出時間: Seestar本体の設定を使用\n\n"
-            "この操作はSeestarへの撮影プラン設定・"
-            "実行予約を行います。\n"
-            "すでに動作中の撮影にも影響する"
-            "可能性があります。\n\n"
+            "この操作はSeestarへの撮影プラン設定・実行予約を行います。\n"
+            "すでに動作中の撮影にも影響する可能性があります。\n\n"
             "転送しますか？",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
@@ -987,25 +881,17 @@ class MosaicPlanner(QMainWindow):
 
         try:
             QApplication.processEvents()
-
-            result = transfer_plan(
-                self.connected_ip,
-                self.plan_data
-            )
+            result = transfer_plan(self.connected_ip, self.plan_data)
 
             QMessageBox.information(
-                self,
-                "転送結果",
+                self, "転送結果",
                 "SeestarへのPLAN送信が完了しました。\n"
                 f"応答: {result}\n\n"
-                "撮影予約・実行状態をSeestar側でも"
-                "確認してください。"
+                "撮影予約・実行状態をSeestar側でも確認してください。"
             )
 
         except Exception as e:
-            QMessageBox.critical(
-                self, "Seestar転送エラー", str(e)
-            )
+            QMessageBox.critical(self, "Seestar転送エラー", str(e))
         finally:
             self.transfer_button.setEnabled(True)
 
@@ -1016,35 +902,21 @@ class MosaicPlanner(QMainWindow):
             return
 
         path, _ = QFileDialog.getSaveFileName(
-            self,
-            "CSV保存",
-            "mosaic_plan.csv",
-            "CSV Files (*.csv)"
+            self, "CSV保存", "mosaic_plan.csv", "CSV Files (*.csv)"
         )
-
         if not path:
             return
 
         try:
-            with open(
-                path, "w", newline="",
-                encoding="utf-8-sig"
-            ) as f:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.writer(f)
-                writer.writerow([
-                    "Row", "Column",
-                    "RA_J2000", "Dec_J2000"
-                ])
+                writer.writerow(["Row", "Column", "RA_J2000", "Dec_J2000"])
                 writer.writerows(self.panels)
 
-            self.statusBar().showMessage(
-                "CSVを保存しました"
-            )
+            self.statusBar().showMessage("CSVを保存しました")
 
         except Exception as e:
-            QMessageBox.critical(
-                self, "CSV保存失敗", str(e)
-            )
+            QMessageBox.critical(self, "CSV保存失敗", str(e))
 
 
 # ============================================================
@@ -1053,8 +925,6 @@ class MosaicPlanner(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-
     window = MosaicPlanner()
     window.show()
-
     sys.exit(app.exec())
