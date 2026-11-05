@@ -3,7 +3,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QRect
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 
-def create_frame_png(path, number, width, height):
+def create_frame_png(path, number, width, height, brightness=30):
     w = 800
     h = max(100, round(w * height / width))
 
@@ -13,7 +13,12 @@ def create_frame_png(path, number, width, height):
     painter = QPainter(image)
     painter.setRenderHint(QPainter.Antialiasing)
 
-    painter.setPen(QPen(QColor(255, 235, 30), 6))
+    factor = brightness / 100.0
+    painter.setPen(QPen(QColor(
+        round(255 * factor),
+        round(235 * factor),
+        round(30 * factor), 255
+    ), 6))
     painter.setBrush(Qt.NoBrush)
     painter.drawRect(5, 5, w - 11, h - 11)
 

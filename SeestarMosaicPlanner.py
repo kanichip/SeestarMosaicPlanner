@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPushButton, QSpinBox,
     QTableWidget, QTableWidgetItem, QTimeEdit,
-    QVBoxLayout, QWidget
+    QVBoxLayout, QWidget, QSlider
 )
 
 from mosaic import calculate_mosaic, calculate_panel_corners
@@ -157,6 +157,22 @@ class MosaicPlanner(QMainWindow):
         g.addWidget(QLabel("重複率 (%)"), 0, 4)
         g.addWidget(self.overlap, 0, 5)
 
+        # 撮影枠の明るさ
+        self.frame_brightness = QSlider(Qt.Horizontal)
+        self.frame_brightness.setRange(0, 100)
+        self.frame_brightness.setValue(30)
+        self.frame_brightness.setTickInterval(10)
+        self.frame_brightness.setTickPosition(QSlider.TicksBelow)
+
+        self.brightness_label = QLabel("30%")
+        self.frame_brightness.valueChanged.connect(
+            lambda value: self.brightness_label.setText(f"{value}%")
+        )
+
+        g.addWidget(QLabel("撮影枠の明るさ"), 1, 0)
+        g.addWidget(self.frame_brightness, 1, 1, 1, 4)
+        g.addWidget(self.brightness_label, 1, 5)
+
         layout.addWidget(group)
 
         # ===== 操作ボタン =====
@@ -166,7 +182,8 @@ class MosaicPlanner(QMainWindow):
             ("モザイク計算", self.calculate),
             ("Stellariumに表示", self.show_on_stellarium),
             ("撮影枠を消去", self.clear_stellarium),
-            ("CSV保存", self.save_csv),
+            ("構図保存", self.save_mosaic),
+            ("構図読込", self.load_mosaic),
         ]
 
         for title, callback in actions:
@@ -174,7 +191,7 @@ class MosaicPlanner(QMainWindow):
             btn.clicked.connect(callback)
             buttons.addWidget(btn)
 
-        g.addLayout(buttons, 1, 0, 1, 6)
+        g.addLayout(buttons, 2, 0, 1, 6)
 
         #layout.addLayout(buttons)
         layout.addWidget(group)
@@ -254,6 +271,86 @@ class MosaicPlanner(QMainWindow):
         layout.addWidget(self.table, 1)
         self.statusBar().showMessage("準備完了")
         self.cleanup_all_potential_frames()
+
+    def save_mosaic(self):
+        """現在のモザイク構図を保存"""
+        from project_io import save_project
+
+        if self.center_ra is None or self.center_dec is None:
+            QMessageBox.warning(
+                self, "確認", "先に基準座標を取得してください"
+            )
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "モザイク構図を保存",
+            "mosaic.smp",
+            "Seestar Mosaic Planner (*.smp)"
+        )
+        if not path:
+            return
+
+        settings = {
+            "telescope": self.telescope.currentText(),
+            "fov_width": self.fov_width.value(),
+            "fov_height": self.fov_height.value(),
+            "center_ra": self.center_ra,
+            "center_dec": self.center_dec,
+            "cols": self.cols.value(),
+            "rows": self.rows.value(),
+            "overlap": self.overlap.value(),
+        }
+
+        try:
+            save_project(path, settings)
+            self.statusBar().showMessage(f"構図保存完了: {path}")
+        except Exception as e:
+            QMessageBox.critical(self, "保存エラー", str(e))
+
+    def load_mosaic(self):
+        """保存したモザイク構図を読み込む"""
+        from project_io import load_project
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "モザイク構図を読み込む",
+            "",
+            "Seestar Mosaic Planner (*.smp)"
+        )
+        if not path:
+            return
+
+        try:
+            data = load_project(path)
+
+            # 古い撮影枠と計算結果を消去
+            self.remove_drawn_frames()
+            self.reset_calculation()
+
+            # 機種・画角を復元
+            self.telescope.setCurrentText(data["telescope"])
+            self.fov_width.setValue(data["fov_width"])
+            self.fov_height.setValue(data["fov_height"])
+
+            # 基準座標を復元
+            self.center_ra = float(data["center_ra"])
+            self.center_dec = float(data["center_dec"])
+            self.coord_label.setText(
+                f"[読込構図] RA: {self.center_ra:.6f}° "
+                f"({self.center_ra / 15.0:.4f}h)  "
+                f"Dec: {self.center_dec:+.6f}°"
+            )
+
+            # モザイク設定を復元
+            self.cols.setValue(data["cols"])
+            self.rows.setValue(data["rows"])
+            self.overlap.setValue(data["overlap"])
+
+            self.statusBar().showMessage(f"構図読込完了: {path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "読込エラー", str(e))
 
     def cleanup_all_potential_frames(self):
         """前回のセッションで残った撮影枠を消去"""
@@ -463,7 +560,8 @@ class MosaicPlanner(QMainWindow):
                 filename = f"smp_frame_{run_id}_{i:03d}.png"
                 create_frame_png(
                     SCRIPTS_DIR / filename,
-                    i, width, height
+                    i, width, height,
+                    self.frame_brightness.value()
                 )
                 filenames.append(filename)
 
