@@ -38,6 +38,12 @@ from PySide6.QtWidgets import (
 
 from mosaic import calculate_mosaic, calculate_panel_corners
 from frame_renderer import create_frame_png
+from stellarium import (
+    get_stellarium_selected,
+    send_stellarium_script,
+    remove_stellarium_frames,
+    load_stellarium_frames,
+)
 
 from config import (
     STELLARIUM_URL,
@@ -47,68 +53,6 @@ from config import (
     MAX_PANELS,
 )
 
-
-# ============================================================
-# Stellarium
-# ============================================================
-
-def get_stellarium_center():
-    """視線ベクトルの中心座標 (J2000 度) を取得"""
-    url = STELLARIUM_URL + "/api/main/view?coord=j2000"
-
-    with urlopen(url, timeout=5) as response:
-        data = json.load(response)
-
-    x, y, z = json.loads(data["j2000"])
-    length = math.sqrt(x*x + y*y + z*z)
-
-    if not length:
-        raise ValueError("無効な視線ベクトル")
-
-    x, y, z = x/length, y/length, z/length
-
-    ra = math.degrees(math.atan2(y, x)) % 360
-    dec = math.degrees(
-        math.atan2(z, math.hypot(x, y))
-    )
-    return ra, dec
-
-
-def get_stellarium_selected():
-    """
-    Stellariumで現在選択されている天体のJ2000座標 (度) と名前を取得。
-    天体が選択されていない場合は画面中心を取得。
-    """
-    url_info = STELLARIUM_URL + "/api/objects/info?format=json"
-
-    try:
-        with urlopen(url_info, timeout=5) as response:
-            data = json.load(response)
-    except Exception:
-        data = {}
-
-    if data and "raJ2000" in data and "decJ2000" in data:
-        ra = float(data["raJ2000"]) % 360.0
-        dec = float(data["decJ2000"])
-        name = data.get("name") or data.get("localized-name") or "選択天体"
-        return ra, dec, name
-
-    ra, dec = get_stellarium_center()
-    return ra, dec, "星図中心（未選択）"
-
-
-def send_stellarium_script(code):
-    data = urlencode({"code": code}).encode("utf-8")
-    request = Request(
-        STELLARIUM_URL + "/api/scripts/direct",
-        data=data,
-        method="POST"
-    )
-
-    with urlopen(request, timeout=15) as response:
-        return response.read().decode(
-            "utf-8", errors="replace"
-        )
 
 
 
@@ -398,18 +342,13 @@ class MosaicPlanner(QMainWindow):
         self.cleanup_all_potential_frames()
 
     def cleanup_all_potential_frames(self):
-        """前回のセッションで残った smp_1 〜 smp_400 をまとめて消去"""
+        """前回のセッションで残った撮影枠を消去"""
         try:
-            # 50枚ずつまとめて消去スクリプトを送信
             for start in range(1, MAX_PANELS + 1, 50):
-                end = min(start + 50, MAX_PANELS + 1)
-                code = "\n".join(
-                    f'core.removeSkyImage("smp_{i}");'
-                    for i in range(start, end)
-                )
-                send_stellarium_script(code)
+                end = min(start + 49, MAX_PANELS)
+                remove_stellarium_frames(start, end)
         except Exception:
-            pass  # Stellarium が未起動の場合は無視
+            pass  # Stellarium未起動の場合は無視
 
     @staticmethod
     def double_spin(low, high, value, decimals):
@@ -520,12 +459,8 @@ class MosaicPlanner(QMainWindow):
             return
 
         for start in range(1, self.drawn_count + 1, 8):
-            end = min(start + 8, self.drawn_count + 1)
-            code = "\n".join(
-                f'core.removeSkyImage("smp_{i}");'
-                for i in range(start, end)
-            )
-            send_stellarium_script(code)
+            end = min(start + 7, self.drawn_count)
+            remove_stellarium_frames(start, end)
 
         self.drawn_count = 0
 
@@ -619,35 +554,8 @@ class MosaicPlanner(QMainWindow):
                 filenames.append(filename)
 
             self.remove_drawn_frames()
-
-            for start in range(0, len(self.panels), 8):
-                lines = []
-                batch = self.panels[start:start + 8]
-
-                for j, panel in enumerate(batch, start=start + 1):
-                    _, _, ra, dec = panel
-
-                    corners = calculate_panel_corners(
-                        ra, dec, width, height
-                    )
-
-                    values = [
-                        coordinate
-                        for corner in corners
-                        for coordinate in corner
-                    ]
-                    args = ", ".join(f"{v:.12f}" for v in values)
-
-                    # Stellarium 26仕様: 相対ファイル名 + 正しい13引数
-                    lines.append(
-                        f'core.loadSkyImage('
-                        f'"smp_{j}", '
-                        f'"{filenames[j-1]}", '
-                        f'{args}, 0, 360, true);'
-                    )
-
-                send_stellarium_script("\n".join(lines))
-                self.drawn_count = start + len(batch)
+            load_stellarium_frames(self.panels, filenames, width, height)
+            self.drawn_count = len(self.panels)
 
             self.statusBar().showMessage(
                 f"{len(self.panels)}枚の撮影枠を送信しました"
