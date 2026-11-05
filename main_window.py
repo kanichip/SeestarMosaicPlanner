@@ -70,7 +70,7 @@ class MosaicPlanner(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Seestar Mosaic Planner v0.5")
+        self.setWindowTitle("Seestar Mosaic Planner v0.6")
         self.resize(450, 400)
 
         self.center_ra = None
