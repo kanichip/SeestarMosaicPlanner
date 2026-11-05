@@ -298,7 +298,7 @@ def create_seestar_plan(
                 round((ra / 15.0) % 24.0, 9),
                 round(dec, 9)
             ],
-            #"lp_filter": False,
+            "lp_filter": False,
             "camera_mode": "tele",
             "skip": False,
             "start_min": start_min + (i - 1) * duration_min,
