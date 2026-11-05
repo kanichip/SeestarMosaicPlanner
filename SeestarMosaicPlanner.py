@@ -36,20 +36,16 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget
 )
 
-STELLARIUM_URL = "http://127.0.0.1:8090"
+from mosaic import calculate_mosaic, calculate_panel_corners
+from frame_renderer import create_frame_png
 
-SCRIPTS_DIR = (
-    Path.home() / "AppData" / "Roaming"
-    / "Stellarium" / "scripts"
+from config import (
+    STELLARIUM_URL,
+    SCRIPTS_DIR,
+    TELESCOPES,
+    PANEL_ROTATION,
+    MAX_PANELS,
 )
-
-TELESCOPES = {
-    "Seestar S30 Pro": (4.60, 2.59),
-    "Seestar S50 Pro": (2.80, 1.575),
-}
-
-PANEL_ROTATION = 90.0
-MAX_PANELS = 400
 
 
 # ============================================================
@@ -114,118 +110,6 @@ def send_stellarium_script(code):
             "utf-8", errors="replace"
         )
 
-
-# ============================================================
-# モザイク計算
-# ============================================================
-
-def offset_coordinate(ra, dec, dx, dy):
-    a = math.radians(ra)
-    d = math.radians(dec)
-
-    center = (
-        math.cos(d)*math.cos(a),
-        math.cos(d)*math.sin(a),
-        math.sin(d)
-    )
-    east = (-math.sin(a), math.cos(a), 0)
-    north = (
-        -math.sin(d)*math.cos(a),
-        -math.sin(d)*math.sin(a),
-        math.cos(d)
-    )
-
-    x = math.tan(math.radians(dx))
-    y = math.tan(math.radians(dy))
-
-    v = [
-        center[i] + x*east[i] + y*north[i]
-        for i in range(3)
-    ]
-
-    length = math.sqrt(sum(t*t for t in v))
-    v = [t/length for t in v]
-
-    return (
-        math.degrees(math.atan2(v[1], v[0])) % 360,
-        math.degrees(
-            math.atan2(v[2], math.hypot(v[0], v[1]))
-        )
-    )
-
-
-def rotate_offset(x, y, angle):
-    t = math.radians(angle)
-    return (
-        x*math.cos(t) - y*math.sin(t),
-        x*math.sin(t) + y*math.cos(t)
-    )
-
-
-def calculate_mosaic(
-    ra, dec, width, height, cols, rows, overlap
-):
-    step_x = width * (1 - overlap / 100)
-    step_y = height * (1 - overlap / 100)
-
-    panels = []
-
-    for row in range(rows):
-        for col in range(cols):
-            x = (col - (cols - 1) / 2.0) * step_x
-            y = ((rows - 1) / 2.0 - row) * step_y
-
-            dx, dy = rotate_offset(x, y, PANEL_ROTATION)
-            pra, pdec = offset_coordinate(ra, dec, dx, dy)
-            panels.append((row + 1, col + 1, pra, pdec))
-
-    return panels
-
-
-def calculate_panel_corners(ra, dec, width, height):
-    corners = [
-        ( width / 2.0, -height / 2.0),
-        (-width / 2.0, -height / 2.0),
-        (-width / 2.0,  height / 2.0),
-        ( width / 2.0,  height / 2.0)
-    ]
-
-    result = []
-    for x, y in corners:
-        dx, dy = rotate_offset(x, y, PANEL_ROTATION)
-        result.append(offset_coordinate(ra, dec, dx, dy))
-    return result
-
-
-def create_frame_png(path, number, width, height):
-    w = 800
-    h = max(100, round(w * height / width))
-
-    image = QImage(w, h, QImage.Format_ARGB32)
-    image.fill(QColor(0, 0, 0, 0))
-
-    painter = QPainter(image)
-    painter.setRenderHint(QPainter.Antialiasing)
-
-    painter.setPen(QPen(QColor(255, 235, 30), 6))
-    painter.setBrush(Qt.NoBrush)
-    painter.drawRect(5, 5, w - 11, h - 11)
-
-    painter.setPen(QColor(255, 255, 80))
-    font = QFont("Arial")
-    font.setPixelSize(48)
-    font.setBold(True)
-    painter.setFont(font)
-
-    painter.drawText(
-        QRect(24, 16, 200, 75),
-        Qt.AlignLeft | Qt.AlignTop,
-        str(number)
-    )
-    painter.end()
-
-    if not image.save(str(path), "PNG"):
-        raise OSError(f"PNG保存失敗: {path}")
 
 
 # ============================================================
