@@ -4,7 +4,8 @@ from datetime import datetime
 
 
 def create_seestar_plan(
-    plan_name, panels, start_min, duration_min
+    plan_name, panels, start_min, duration_min, lp_filter,
+    repeat_count
 ):
     targets = []
 
@@ -13,11 +14,11 @@ def create_seestar_plan(
         + uuid.uuid4().int % 800000000
     )
 
-    if base_id + len(panels) > 999999999:
+    if base_id + len(panels) * repeat_count > 999999999:
         base_id = 100000000
 
     for i, (row, col, ra, dec) in enumerate(
-        panels, start=1
+            panels * repeat_count, start=1
     ):
         target = {
             "target_id": base_id + i,
@@ -27,7 +28,7 @@ def create_seestar_plan(
                 round((ra / 15.0) % 24.0, 9),
                 round(dec, 9)
             ],
-            "lp_filter": False,
+            "lp_filter": lp_filter,
             "camera_mode": "tele",
             "skip": False,
             "start_min": start_min + (i - 1) * duration_min,

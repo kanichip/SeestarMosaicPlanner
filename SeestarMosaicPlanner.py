@@ -174,7 +174,10 @@ class MosaicPlanner(QMainWindow):
             btn.clicked.connect(callback)
             buttons.addWidget(btn)
 
-        layout.addLayout(buttons)
+        g.addLayout(buttons, 1, 0, 1, 6)
+
+        #layout.addLayout(buttons)
+        layout.addWidget(group)
 
         # ===== PLAN作成 =====
         group = QGroupBox("PLAN作成")
@@ -186,28 +189,53 @@ class MosaicPlanner(QMainWindow):
         self.start_time.setDisplayFormat("HH:mm")
         self.start_time.setTime(QTime(21, 0))
 
-        self.next_day = QCheckBox("翌日未明の開始")
+        self.lp_filter = QCheckBox("LP_Filter")
 
         self.duration = QSpinBox()
         self.duration.setRange(1, 1440)
         self.duration.setValue(40)
         self.duration.setSuffix(" 分")
 
+        self.repeat_count = QSpinBox()
+        self.repeat_count.setRange(1, 99)
+        self.repeat_count.setValue(1)
+        self.repeat_count.setSuffix(" 回")
+
         self.plan_button = QPushButton("PLAN作成（JSON）")
         self.plan_button.clicked.connect(self.make_plan)
 
         self.transfer_button = QPushButton("Seestar転送")
         self.transfer_button.clicked.connect(self.send_plan_to_seestar)
-
+        """
         g.addWidget(QLabel("プラン名"), 0, 0)
         g.addWidget(self.plan_name, 0, 1)
         g.addWidget(QLabel("開始時間"), 0, 2)
         g.addWidget(self.start_time, 0, 3)
-        g.addWidget(self.next_day, 1, 3)
+        g.addWidget(self.lp_filter, 2, 1)
+        g.addWidget(QLabel("繰り返し回数"), 1, 2)
+        g.addWidget(self.repeat_count, 1, 3)
+
         g.addWidget(QLabel("1パネル撮影時間"), 1, 0)
         g.addWidget(self.duration, 1, 1)
         g.addWidget(self.plan_button, 2, 0, 1, 2)
         g.addWidget(self.transfer_button, 2, 2, 1, 2)
+        """
+        # 0行目：プラン名・LP_Filter
+        g.addWidget(QLabel("プラン名"), 0, 0)
+        g.addWidget(self.plan_name, 0, 1, 1, 3)
+        g.addWidget(self.lp_filter, 0, 4, 1, 2)
+
+        # 1行目：開始時間・撮影時間・繰り返し回数
+        g.addWidget(QLabel("開始時間"), 1, 0)
+        g.addWidget(self.start_time, 1, 1)
+        g.addWidget(QLabel("撮影時間"), 1, 2)
+        g.addWidget(self.duration, 1, 3)
+        g.addWidget(QLabel("繰り返し回数"), 1, 4)
+        g.addWidget(self.repeat_count, 1, 5)
+
+        # 2行目：操作ボタン
+        g.addWidget(self.plan_button, 2, 0, 1, 3)
+        g.addWidget(self.transfer_button, 2, 3, 1, 3)
 
         layout.addWidget(group)
 
@@ -464,8 +492,9 @@ class MosaicPlanner(QMainWindow):
             self.calculation_settings,
             self.plan_name.text().strip(),
             self.start_time.time().toString("HH:mm"),
-            self.next_day.isChecked(),
-            self.duration.value()
+            self.lp_filter.isChecked(),
+            self.duration.value(),
+            self.repeat_count.value()
         )
 
     def make_plan(self):
@@ -479,12 +508,10 @@ class MosaicPlanner(QMainWindow):
 
         t = self.start_time.time()
         start_min = t.hour() * 60 + t.minute()
-        if self.next_day.isChecked():
-            start_min += 1440
 
         duration = self.duration.value()
 
-        if start_min + duration * len(self.panels) > 2880:
+        if start_min + duration * len(self.panels) * self.repeat_count.value() > 2880:
             QMessageBox.warning(
                 self, "時刻エラー",
                 "プラン終了時刻が開始日の翌日24時を超えています。\n"
@@ -493,7 +520,9 @@ class MosaicPlanner(QMainWindow):
             return
 
         data = create_seestar_plan(
-            name, self.panels, start_min, duration
+            name, self.panels, start_min, duration,
+            self.lp_filter.isChecked(),
+            self.repeat_count.value()
         )
 
         path, _ = QFileDialog.getSaveFileName(
@@ -537,13 +566,27 @@ class MosaicPlanner(QMainWindow):
         plan_name = self.plan_data["plan_name"]
         count = len(self.plan_data["list"])
 
+        # 撮影終了予定時刻
+        start = self.start_time.time()
+        start_min = start.hour() * 60 + start.minute()
+        total_min = self.duration.value() * count
+        end_min = start_min + total_min
+
+        end_time = f"{(end_min // 60) % 24:02d}:{end_min % 60:02d}"
+        if end_min >= 1440:
+            end_time = "翌日 " + end_time
+
         answer = QMessageBox.question(
             self,
             "Seestar転送確認",
             f"接続先: {self.connected_ip}\n"
             f"プラン: {plan_name}\n"
-            f"パネル数: {count}\n"
+            f"パネル数: {len(self.panels)}\n"
+            f"繰り返し回数: {self.repeat_count.value()}回\n"
+            f"総撮影ターゲット数: {len(self.panels) * self.repeat_count.value()}\n"  
             f"1パネル: {self.duration.value()}分\n"
+            f"開始時刻: {start.toString('HH:mm')}\n"
+            f"終了予定: {end_time}\n"
             "露出時間: Seestar本体の設定を使用\n\n"
             "この操作はSeestarへの撮影プラン設定・実行予約を行います。\n"
             "すでに動作中の撮影にも影響する可能性があります。\n\n"
