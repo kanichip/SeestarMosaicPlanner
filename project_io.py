@@ -7,6 +7,7 @@ def save_project(path, settings):
     """モザイク構図の設定をJSON形式で保存"""
     data = {
         "version": 1,
+        "name": settings.get("name", "MosaicPlan"),
         "telescope": settings["telescope"],
         "fov_width": settings["fov_width"],
         "fov_height": settings["fov_height"],

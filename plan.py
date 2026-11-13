@@ -23,7 +23,7 @@ def create_seestar_plan(
         target = {
             "target_id": base_id + i,
             "target_name": f"SMP-P{i}",
-            "alias_name": f"{plan_name}-R{row}C{col}",
+            "alias_name": f"{plan_name}-P{i}",
             "target_ra_dec": [
                 round((ra / 15.0) % 24.0, 9),
                 round(dec, 9)

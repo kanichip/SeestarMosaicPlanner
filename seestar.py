@@ -11,7 +11,6 @@ def normalize_model(model):
         return "Seestar S50 Pro"
     return None
 
-
 def discover_seestars():
     from seestarpy import connection
     import sys

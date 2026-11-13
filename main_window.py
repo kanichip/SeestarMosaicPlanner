@@ -13,10 +13,13 @@ from urllib.request import Request, urlopen
 # ============================================================
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys._MEIPASS)
+    APP_DIR = Path(sys.executable).resolve().parent
 else:
     BASE_DIR = Path(__file__).resolve().parent
+    APP_DIR = BASE_DIR
 
 PEM_PATH = BASE_DIR / "seestar.pem"
+PLANS_DIR = APP_DIR / "plans"
 
 try:
     from seestarpy import auth
@@ -70,7 +73,7 @@ class MosaicPlanner(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Seestar Mosaic Planner v0.6")
+        self.setWindowTitle("Seestar Mosaic Planner v0.8")
         self.resize(450, 400)
 
         self.center_ra = None
@@ -80,8 +83,6 @@ class MosaicPlanner(QMainWindow):
         self.calculation_settings = None
 
         self.connected_ip = None
-        self.plan_data = None
-        self.plan_settings = None
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -140,6 +141,8 @@ class MosaicPlanner(QMainWindow):
         group = QGroupBox("モザイク設定")
         g = QGridLayout(group)
 
+        self.composition_name = QLineEdit("MosaicPlan")
+
         self.cols = QSpinBox()
         self.cols.setRange(1, 20)
         self.cols.setValue(3)
@@ -150,12 +153,15 @@ class MosaicPlanner(QMainWindow):
 
         self.overlap = self.double_spin(0, 90, 20, 1)
 
-        g.addWidget(QLabel("南北方向"), 0, 0)
-        g.addWidget(self.cols, 0, 1)
-        g.addWidget(QLabel("東西方向"), 0, 2)
-        g.addWidget(self.rows, 0, 3)
-        g.addWidget(QLabel("重複率 (%)"), 0, 4)
-        g.addWidget(self.overlap, 0, 5)
+        g.addWidget(QLabel("構図名"), 0, 0)
+        g.addWidget(self.composition_name, 0, 1, 1, 5)
+
+        g.addWidget(QLabel("南北方向"), 1, 0)
+        g.addWidget(self.cols, 1, 1)
+        g.addWidget(QLabel("東西方向"), 1, 2)
+        g.addWidget(self.rows, 1, 3)
+        g.addWidget(QLabel("重複率 (%)"), 1, 4)
+        g.addWidget(self.overlap, 1, 5)
 
         # 撮影枠の明るさ
         self.frame_brightness = QSlider(Qt.Horizontal)
@@ -169,11 +175,9 @@ class MosaicPlanner(QMainWindow):
             lambda value: self.brightness_label.setText(f"{value}%")
         )
 
-        g.addWidget(QLabel("撮影枠の明るさ"), 1, 0)
-        g.addWidget(self.frame_brightness, 1, 1, 1, 4)
-        g.addWidget(self.brightness_label, 1, 5)
-
-        layout.addWidget(group)
+        g.addWidget(QLabel("撮影枠の明るさ"), 2, 0)
+        g.addWidget(self.frame_brightness, 2, 1, 1, 4)
+        g.addWidget(self.brightness_label, 2, 5)
 
         # ===== 操作ボタン =====
         buttons = QHBoxLayout()
@@ -191,68 +195,51 @@ class MosaicPlanner(QMainWindow):
             btn.clicked.connect(callback)
             buttons.addWidget(btn)
 
-        g.addLayout(buttons, 2, 0, 1, 6)
+        g.addLayout(buttons, 3, 0, 1, 6)
 
-        #layout.addLayout(buttons)
         layout.addWidget(group)
 
         # ===== PLAN作成 =====
         group = QGroupBox("PLAN作成")
         g = QGridLayout(group)
 
-        self.plan_name = QLineEdit("MosaicPlan")
-
         self.start_time = QTimeEdit()
         self.start_time.setDisplayFormat("HH:mm")
         self.start_time.setTime(QTime(21, 0))
-
-        self.lp_filter = QCheckBox("LP_Filter")
+        self.start_time.timeChanged.connect(self.update_end_time)
 
         self.duration = QSpinBox()
         self.duration.setRange(1, 1440)
         self.duration.setValue(40)
         self.duration.setSuffix(" 分")
+        self.duration.valueChanged.connect(self.update_end_time)
 
         self.repeat_count = QSpinBox()
         self.repeat_count.setRange(1, 99)
         self.repeat_count.setValue(1)
-        self.repeat_count.setSuffix(" 回")
+        self.repeat_count.valueChanged.connect(self.update_end_time)
 
-        self.plan_button = QPushButton("PLAN作成（JSON）")
-        self.plan_button.clicked.connect(self.make_plan)
+        self.lp_filter = QCheckBox("LP_Filter")
+
+        self.end_time_label = QLabel("--:--")
+        self.end_time_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         self.transfer_button = QPushButton("Seestar転送")
         self.transfer_button.clicked.connect(self.send_plan_to_seestar)
-        """
-        g.addWidget(QLabel("プラン名"), 0, 0)
-        g.addWidget(self.plan_name, 0, 1)
-        g.addWidget(QLabel("開始時間"), 0, 2)
-        g.addWidget(self.start_time, 0, 3)
-        g.addWidget(self.lp_filter, 2, 1)
-        g.addWidget(QLabel("繰り返し回数"), 1, 2)
-        g.addWidget(self.repeat_count, 1, 3)
 
-        g.addWidget(QLabel("1パネル撮影時間"), 1, 0)
-        g.addWidget(self.duration, 1, 1)
-        g.addWidget(self.plan_button, 2, 0, 1, 2)
-        g.addWidget(self.transfer_button, 2, 2, 1, 2)
-        """
-        # 0行目：プラン名・LP_Filter
-        g.addWidget(QLabel("プラン名"), 0, 0)
-        g.addWidget(self.plan_name, 0, 1, 1, 3)
-        g.addWidget(self.lp_filter, 0, 4, 1, 2)
+        # 0行目：開始時間・撮影時間・回数・LP_Filter
+        g.addWidget(QLabel("開始時間"), 0, 0)
+        g.addWidget(self.start_time, 0, 1)
+        g.addWidget(QLabel("撮影時間"), 0, 2)
+        g.addWidget(self.duration, 0, 3)
+        g.addWidget(QLabel("回数"), 0, 4)
+        g.addWidget(self.repeat_count, 0, 5)
+        g.addWidget(self.lp_filter, 0, 6)
 
-        # 1行目：開始時間・撮影時間・繰り返し回数
-        g.addWidget(QLabel("開始時間"), 1, 0)
-        g.addWidget(self.start_time, 1, 1)
-        g.addWidget(QLabel("撮影時間"), 1, 2)
-        g.addWidget(self.duration, 1, 3)
-        g.addWidget(QLabel("繰り返し回数"), 1, 4)
-        g.addWidget(self.repeat_count, 1, 5)
-
-        # 2行目：操作ボタン
-        g.addWidget(self.plan_button, 2, 0, 1, 3)
-        g.addWidget(self.transfer_button, 2, 3, 1, 3)
+        # 1行目：終了予定・Seestar転送ボタン
+        g.addWidget(QLabel("終了予定"), 1, 0)
+        g.addWidget(self.end_time_label, 1, 1)
+        g.addWidget(self.transfer_button, 1, 2, 1, 5)
 
         layout.addWidget(group)
 
@@ -282,16 +269,19 @@ class MosaicPlanner(QMainWindow):
             )
             return
 
+        name = self.composition_name.text().strip() or "MosaicPlan"
+
         path, _ = QFileDialog.getSaveFileName(
             self,
             "モザイク構図を保存",
-            "mosaic.smp",
+            f"{name}.smp",
             "Seestar Mosaic Planner (*.smp)"
         )
         if not path:
             return
 
         settings = {
+            "name": name,
             "telescope": self.telescope.currentText(),
             "fov_width": self.fov_width.value(),
             "fov_height": self.fov_height.value(),
@@ -327,6 +317,9 @@ class MosaicPlanner(QMainWindow):
             # 古い撮影枠と計算結果を消去
             self.remove_drawn_frames()
             self.reset_calculation()
+
+            # 構図名を復元
+            self.composition_name.setText(data.get("name", "MosaicPlan"))
 
             # 機種・画角を復元
             self.telescope.setCurrentText(data["telescope"])
@@ -384,8 +377,7 @@ class MosaicPlanner(QMainWindow):
         self.panels = []
         self.calculation_settings = None
         self.table.setRowCount(0)
-        self.plan_data = None
-        self.plan_settings = None
+        self.update_end_time()
 
     def update_fov(self, name):
         if name not in TELESCOPES:
@@ -523,6 +515,7 @@ class MosaicPlanner(QMainWindow):
             ]):
                 self.table.setItem(i, j, QTableWidgetItem(value))
 
+        self.update_end_time()
         self.statusBar().showMessage(
             f"{len(self.panels)}パネルを計算しました"
         )
@@ -583,62 +576,25 @@ class MosaicPlanner(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "削除エラー", str(e))
 
-    # ===== PLAN作成 =====
-
-    def current_plan_settings(self):
-        return (
-            self.calculation_settings,
-            self.plan_name.text().strip(),
-            self.start_time.time().toString("HH:mm"),
-            self.lp_filter.isChecked(),
-            self.duration.value(),
-            self.repeat_count.value()
-        )
-
-    def make_plan(self):
-        if not self.valid_calculation():
+    def update_end_time(self):
+        if not self.panels:
+            self.end_time_label.setText("--:--")
             return
 
-        name = self.plan_name.text().strip()
-        if not name:
-            QMessageBox.warning(self, "確認", "プラン名を入力してください")
-            return
-
-        t = self.start_time.time()
-        start_min = t.hour() * 60 + t.minute()
-
+        start = self.start_time.time()
+        start_min = start.hour() * 60 + start.minute()
         duration = self.duration.value()
+        repeat = self.repeat_count.value()
+        total_min = duration * len(self.panels) * repeat
+        end_min = start_min + total_min
 
-        if start_min + duration * len(self.panels) * self.repeat_count.value() > 2880:
-            QMessageBox.warning(
-                self, "時刻エラー",
-                "プラン終了時刻が開始日の翌日24時を超えています。\n"
-                "開始時刻か撮影時間を変更してください。"
-            )
-            return
+        end_time = f"{(end_min // 60) % 24:02d}:{end_min % 60:02d}"
+        if end_min >= 2880:
+            end_time = "2日後 " + end_time
+        elif end_min >= 1440:
+            end_time = "翌日 " + end_time
 
-        data = create_seestar_plan(
-            name, self.panels, start_min, duration,
-            self.lp_filter.isChecked(),
-            self.repeat_count.value()
-        )
-
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Seestar PLAN JSON保存", f"{name}.json", "JSON Files (*.json)"
-        )
-        if not path:
-            return
-
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-
-            self.plan_data = data
-            self.plan_settings = self.current_plan_settings()
-            self.statusBar().showMessage(f"PLAN作成完了: {path}")
-
-        except Exception as e:
-            QMessageBox.critical(self, "PLAN保存失敗", str(e))
+        self.end_time_label.setText(end_time)
 
     # ===== Seestar転送 =====
 
@@ -650,26 +606,32 @@ class MosaicPlanner(QMainWindow):
         if not self.valid_calculation():
             return
 
-        if self.plan_data is None:
-            QMessageBox.warning(self, "確認", "先にPLAN作成を実行してください")
+        plan_name = self.composition_name.text().strip()
+        if not plan_name:
+            QMessageBox.warning(self, "確認", "構図名を入力してください")
             return
 
-        if self.current_plan_settings() != self.plan_settings:
+        start = self.start_time.time()
+        start_min = start.hour() * 60 + start.minute()
+        duration = self.duration.value()
+        repeat = self.repeat_count.value()
+        total_min = duration * len(self.panels) * repeat
+
+        if start_min + total_min > 2880:
             QMessageBox.warning(
-                self, "確認",
-                "PLAN作成後に設定が変更されています。\nPLANを作り直してください。"
+                self, "時刻エラー",
+                "プラン終了時刻が開始日の翌日24時を超えています。\n"
+                "開始時刻か撮影時間を変更してください。"
             )
             return
 
-        plan_name = self.plan_data["plan_name"]
-        count = len(self.plan_data["list"])
+        data = create_seestar_plan(
+            plan_name, self.panels, start_min, duration,
+            self.lp_filter.isChecked(),
+            repeat
+        )
 
-        # 撮影終了予定時刻
-        start = self.start_time.time()
-        start_min = start.hour() * 60 + start.minute()
-        total_min = self.duration.value() * count
         end_min = start_min + total_min
-
         end_time = f"{(end_min // 60) % 24:02d}:{end_min % 60:02d}"
         if end_min >= 1440:
             end_time = "翌日 " + end_time
@@ -680,9 +642,9 @@ class MosaicPlanner(QMainWindow):
             f"接続先: {self.connected_ip}\n"
             f"プラン: {plan_name}\n"
             f"パネル数: {len(self.panels)}\n"
-            f"繰り返し回数: {self.repeat_count.value()}回\n"
-            f"総撮影ターゲット数: {len(self.panels) * self.repeat_count.value()}\n"  
-            f"1パネル: {self.duration.value()}分\n"
+            f"繰り返し回数: {repeat}回\n"
+            f"総撮影ターゲット数: {len(self.panels) * repeat}\n"
+            f"1パネル: {duration}分\n"
             f"開始時刻: {start.toString('HH:mm')}\n"
             f"終了予定: {end_time}\n"
             "露出時間: Seestar本体の設定を使用\n\n"
@@ -699,12 +661,18 @@ class MosaicPlanner(QMainWindow):
         self.transfer_button.setEnabled(False)
 
         try:
+            PLANS_DIR.mkdir(parents=True, exist_ok=True)
+            plan_path = PLANS_DIR / f"{plan_name}.json"
+            with open(plan_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
             QApplication.processEvents()
-            result = transfer_plan(self.connected_ip, self.plan_data)
+            result = transfer_plan(self.connected_ip, data)
 
             QMessageBox.information(
                 self, "転送結果",
                 "SeestarへのPLAN送信が完了しました。\n"
+                f"プラン保存先: {plan_path.name}\n"
                 f"応答: {result}\n\n"
                 "撮影予約・実行状態をSeestar側でも確認してください。"
             )
